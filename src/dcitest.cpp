@@ -105,7 +105,7 @@ int main(int argc, char *argv[]) {
     while((c = getopt(argc, argv, "p:i:2:g:d:n:k:l:m:h")) >= 0) {
          switch(c) {
              case 'd': nd = std::atoi(optarg); break;
-                     case 'n': npoints = std::atoi(optarg); break;
+             case 'n': npoints = std::atoi(optarg); break;
              case 'k': k = std::atoi(optarg); break;
              case '2': k2 = std::atoi(optarg); break;
              case 'l': l = std::atoi(optarg); break;
@@ -161,17 +161,21 @@ int main(int argc, char *argv[]) {
     std::fprintf(stderr, "Generated data. nd: %d.np: %d\n", nd, npoints);
     for(const auto &v: ls)
         assert(unsigned(nd) == v.size());
+    std::fprintf(stderr, "Making e2dci\n");
     DCI<FLOAT_TYPE, uint32_t, std::set, std::unordered_set, blaze::rowMajor, E2LSHasher<>, std::uint16_t> e2dci(
         m, l, nd, 1e-5, true, gamma);
+    std::fprintf(stderr, "Making dci\n");
     DCI<FLOAT_TYPE> dci(m, l, nd, 1e-5, true, gamma);
-    E2LSHasher<> d2(nd, l * m, 2.);
+    std::fprintf(stderr, "e2lshasher\n");
+    E2LSHasher<FLOAT_TYPE> d2(m * l, nd, 2.);
+    std::fprintf(stderr, "About to project with E2LSHasher\n");
     d2.project(ls[0]);
     size_t lshash = d2.hash(ls[0]);
+    std::fprintf(stderr, "lshash: %zu\n", lshash);
     for(size_t i = 0; i < ls.size(); ++i) {
         dci.add(ls[i]);
         e2dci.add(ls[i]);
     }
-    std::fprintf(stderr, "Added\n");
     auto topn = dci.query(ls[0], k);
     std::fprintf(stderr, "topn, where n is %zu: \n\n", topn.size());
     std::reverse(topn.begin(), topn.end());

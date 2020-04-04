@@ -331,28 +331,28 @@ public:
             add(*i1++);
     }
     template<typename T>
-    void add(T &val) {
-        auto vn = norm(val);
-        CONST_IF(is_cos) {
-            if(std::abs(vn - 1.) > 1e-6)
-                val /= vn;
-        }
-        add(static_cast<std::add_const_t<T> &>(val));
-    }
-    template<typename T>
     void add(const T &val) {
         if(&val[1] - &val[0] != 1) {
             char buf[256];
             std::sprintf(buf, "[%s]: Incorrect storage order", __PRETTY_FUNCTION__);
             throw std::runtime_error(buf);
         }
+        if(val.size() != d_) {
+            char buf[256];
+            std::sprintf(buf, "[%s]: Incorrect project size: %zu found, %zu expected", __PRETTY_FUNCTION__, val.size(), d_);
+            throw std::runtime_error(buf);
+        }
 #ifdef TIME_ADDITIONS
         auto t = std::chrono::high_resolution_clock::now();
 #endif
-        auto p = &val[0];
-        blaze::DynamicVector<float_type> tmp = reinterpret_cast<uint64_t>(p) % ALIGNMENT
-            ? proj_.project(blaze::CustomVector<const float_type, blaze::unaligned, blaze::unpadded>(p, d_))
-            : proj_.project(blaze::CustomVector<const float_type, blaze::aligned, blaze::unpadded>(p, d_));
+        using ct = std::add_pointer_t<std::remove_const_t<std::decay_t<decltype(val[0])>>>;
+        ct p = const_cast<ct>(&val[0]);
+        blaze::DynamicVector<float_type> tmp;
+        if(reinterpret_cast<uint64_t>(p) % ALIGNMENT) {
+            tmp = proj_.project(blaze::CustomVector<float_type, blaze::unaligned, blaze::unpadded>(p, d_));
+        } else {
+            tmp = proj_.project(blaze::CustomVector<float_type, blaze::aligned, blaze::unpadded>(p, d_));
+        }
         ProjI to_insert;
         const auto id = n_inserted_++;
         val_ptrs_.emplace_back(static_cast<const float_type *RESTRICT>(p));
@@ -406,7 +406,7 @@ public:
         return nullptr;
     }
     std::vector<ProjI> prioritized_query(const float_type *ptr, unsigned k, unsigned k1) const {
-        const blaze::CustomVector<const float_type, blaze::aligned, blaze::unpadded> val(ptr, d_);
+        const blaze::CustomVector<float_type, blaze::aligned, blaze::unpadded> val(const_cast<float_type *>(ptr), d_);
         using ProjIM = std::pair<ProjI, IdType>; // To track 'm', as well, as that's necessary for prioritized query.
         if(k <= val_ptrs_.size())
             return query(ptr, k);
@@ -489,11 +489,11 @@ public:
         return prioritized_query(&x[0], k, k1);
     }
     template<typename FT, bool OSO>
-    auto query(const blaze::DynamicVector<FT, OSO> &x, unsigned k) const {
-        return query(&x[0], k);
+    auto query(const blaze::DenseVector<FT, OSO> &x, unsigned k) const {
+        return query(&(~x)[0], k);
     }
     std::vector<ProjI> query(const float_type *x, unsigned k) const {
-        blaze::CustomVector<const float_type, blaze::aligned, blaze::unpadded> val(x, d_);
+        blaze::CustomVector<float_type, blaze::aligned, blaze::unpadded> val(const_cast<float_type *>(x), d_);
         bool klt = k <= val_ptrs_.size();
         std::vector<ProjI> vs(klt ? k: unsigned(val_ptrs_.size()));
         if(!klt) {

@@ -201,7 +201,8 @@ struct LSHasher {
 
 
 template<typename FType, bool OSO>
-static INLINE uint64_t cmp2hash(const blaze::DynamicVector<FType, OSO> &c, size_t n=0) {
+static INLINE uint64_t cmp2hash(const blaze::DenseVector<FType, OSO> &c, size_t n=0) {
+    const auto &cref = ~c;
     assert(n <= 64);
     uint64_t ret = 0;
     if(n == 0) {
@@ -227,24 +228,25 @@ static constexpr size_t VSIZE =
 #endif
         ;
         using LV = F2VType<FType, VSIZE>;
-        for(; i < n / COUNT;ret = (ret << COUNT) | cmp_zero<FType, typename LV::type>(LV::load((&c[i++ * COUNT]))));
+        for(; i < n / COUNT;ret = (ret << COUNT) | cmp_zero<FType, typename LV::type>(LV::load((&cref[i++ * COUNT]))));
         i *= COUNT;
     }
 #else
     for(;i + 8 <= n; i += 8) {
         ret = (ret << 8) |
-              ((c[i] > 0.) << 7) | ((c[i + 1] > 0.) << 6) |
-              ((c[i + 2] > 0.) << 5) | ((c[i + 3] > 0.) << 4) |
-              ((c[i + 4] > 0.) << 3) | ((c[i + 5] > 0.) << 2) |
-              ((c[i + 6] > 0.) << 1) | (c[i + 7] > 0.);
+              ((cref[i] > 0.) << 7) | ((cref[i + 1] > 0.) << 6) |
+              ((cref[i + 2] > 0.) << 5) | ((cref[i + 3] > 0.) << 4) |
+              ((cref[i + 4] > 0.) << 3) | ((cref[i + 5] > 0.) << 2) |
+              ((cref[i + 6] > 0.) << 1) | (cref[i + 7] > 0.);
     }
 #endif
-    for(; i < n; ret = (ret << 1) | (c[i++] > 0.));
+    for(; i < n; ret = (ret << 1) | (cref[i++] > 0.));
     return ret;
 }
 
 template<typename FType=float, bool SO=blaze::rowMajor, typename DistributionType=std::normal_distribution<FType>>
 struct MatrixLSHasher {
+    // Hyperplane hasher
     using CType = ::blaze::DynamicMatrix<FType, SO>;
     using this_type       =       MatrixLSHasher<FType, SO>;
     using const_this_type = const MatrixLSHasher<FType, SO>;
@@ -252,36 +254,46 @@ struct MatrixLSHasher {
     template<typename...DistArgs>
     MatrixLSHasher(size_t nr, size_t nc, bool orthonormalize=true, uint64_t seed=0,
                    DistArgs &&...args):
-        container_(std::move(generate_randproj_matrix<FType, SO, DistributionType>(nr, nc, orthonormalize, seed, std::forward<DistArgs>(args)...))) {}
-    auto &multiply(const blaze::DynamicVector<FType, SO> &c, blaze::DynamicVector<FType, SO> &ret) const {
+        container_(generate_randproj_matrix<FType, SO, DistributionType>(nr, nc, orthonormalize, seed, std::forward<DistArgs>(args)...)) {}
+
+#if 0
+    template<bool OSO>
+    auto &multiply(const blaze::DynamicVector<FType, OSO> &c, blaze::DynamicVector<FType, SO> &ret) const {
         //std::fprintf(stderr, "size of input: %zu. size of ret: %zu. Matrix sizes: %zu/%zu\n", c.size(), ret.size(), container_.rows(), container_.columns());
-        ret = this->container_ * c;
+        ret = trans(this->container_ * trans(c));
         //std::fprintf(stderr, "multiplied successfully\n");
         return ret;
     }
-    blaze::DynamicVector<FType, SO> multiply(const blaze::DynamicVector<FType, SO> &c) const {
+#endif
+    template<typename VT, bool TF>
+    decltype(auto) multiply(const blaze::DenseVector<VT, TF> &c) const {
         blaze::DynamicVector<FType, SO> vec;
-        //std::fprintf(stderr, "size of input: %zu. size of vec: %zu. Matrix sizes: %zu/%zu\n", c.size(), vec.size(), container_.rows(), container_.columns());
-        this->multiply(c, vec);
+        if constexpr(TF == SO) {
+            vec = this->container_ * ~c;
+        } else {
+            vec = this->container_ * trans(~c);
+        }
         return vec;
     }
-    auto multiply(const blaze::DynamicVector<FType, !SO> &c) const {
+#if 0
+    auto multiply(const blaze::DynamicVector<FType, SO> &c) const {
         //std::fprintf(stderr, "size of input: %zu. size of vec: %zu. Matrix sizes: %zu/%zu\n", c.size(), container_.rows(), container_.columns());
         blaze::DynamicVector<FType, SO> vec = this->container_ * trans(c);
         return vec;
     }
+#endif
     template<typename...Args>
     decltype(auto) project(Args &&...args) const {return multiply(std::forward<Args>(args)...);}
-    template<bool OSO>
-    uint64_t hash(const blaze::DynamicVector<FType, OSO> &c) const {
+    template<typename VT, bool OSO>
+    uint64_t hash(const blaze::DenseVector<VT, OSO> &c) const {
 #if VERBOSE_AF
         std::cout << this->container_ << '\n';
 #endif
         blaze::DynamicVector<FType, SO> vec = multiply(c);
         return cmp2hash(vec); // This is the SRP hasher (signed random projection)
     }
-    template<bool OSO>
-    uint64_t operator()(const blaze::DynamicVector<FType, OSO> &c) const {
+    template<typename VT, bool OSO>
+    uint64_t operator()(const blaze::DenseVector<VT, OSO> &c) const {
         return this->hash(c);
     }
 };
@@ -289,16 +301,16 @@ struct MatrixLSHasher {
 template<typename FType=float, bool OSO=blaze::rowMajor, typename DistributionType=std::normal_distribution<FType>>
 struct E2LSHasher {
     MatrixLSHasher<FType, OSO, DistributionType> superhasher_;
-    blaze::DynamicVector<FType> b_;
-    double r_;
+    blaze::DynamicVector<FType, OSO> b_;
+    const double r_;
     mclhasher clhasher_;
     template<typename...Args>
-    E2LSHasher(unsigned d, unsigned k, double r = 1., uint64_t seed=0, Args &&...args): superhasher_(k, d, false, seed, std::forward<Args>(args)...), r_(r), b_(k), clhasher_(seed * seed + seed) {
-        superhasher_.container_ /= r;
+    E2LSHasher(unsigned d, unsigned k, double r = 1., uint64_t seed=0, Args &&...args):
+            superhasher_(/*nhashes = */d, /*dim = */k, false, seed, std::forward<Args>(args)...), r_(r), clhasher_(seed * seed + seed) {
+        superhasher_.container_ *= static_cast<FType>(1. / r);
         std::uniform_real_distribution<FType> gen(0, r_);
         std::mt19937_64 mt(seed ^ uint64_t(d * k * r));
-        for(auto &v: b_)
-            v = gen(mt);
+        b_ = blaze::generate(d, [&mt,&gen](auto){return gen(mt);});
     }
     E2LSHasher(const E2LSHasher &o) = default;
     E2LSHasher(E2LSHasher &&o) = default;
